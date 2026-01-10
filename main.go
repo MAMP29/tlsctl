@@ -1,7 +1,12 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"tlsctl/internal/scan"
+)
 
 func main() {
 	fmt.Println("Programa inicial, inicial programa")
+
+	scan.LaunchPrincipalExecution()
 }
