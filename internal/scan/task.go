@@ -18,7 +18,6 @@ type ScanEndpoint struct {
 type ScanTask struct {
 	Host      string         `json:"host"`
 	Status    string         `json:"status"` // "running", "done", "error", "timeout"
-	Progress  int            `json:"progress"`
 	Error     *string        `json:"statusMessage,omitempty"`
 	StartedAt int            `json:"startTime"`
 	Endpoints []ScanEndpoint `json:"endpoints"`
@@ -42,7 +41,6 @@ func (t ScanTask) String() string {
 	fmt.Fprintf(&b, "ScanTask{\n")
 	fmt.Fprintf(&b, "  Host: %s\n", t.Host)
 	fmt.Fprintf(&b, "  Status: %s\n", t.Status)
-	fmt.Fprintf(&b, "  Progress: %d%%\n", t.Progress)
 	fmt.Fprintf(&b, "  StartedAt: %d\n", t.StartedAt)
 
 	if !t.EndpointsAtZero() {

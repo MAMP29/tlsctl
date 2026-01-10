@@ -44,7 +44,7 @@ func GetInfo(ctx context.Context) Info {
 
 	err = json.NewDecoder(res.Body).Decode(&info)
 	if err != nil {
-		slog.Error("Error al decodificar JSON", "err", err)
+		slog.Error("Error al decodificar el JSON de información", "err", err)
 		return Info{}
 	}
 	return info
