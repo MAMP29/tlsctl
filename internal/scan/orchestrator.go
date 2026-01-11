@@ -8,6 +8,13 @@ import (
 	"time"
 )
 
+type WorkerSignal struct {
+	WorkerID   int
+	StatusCode int
+	Domain     string
+	Action     string
+}
+
 func LaunchPrincipalExecution() {
 
 	generalBackground := context.Background()
@@ -20,7 +27,7 @@ func LaunchPrincipalExecution() {
 	fmt.Println("Obtención de la información")
 	fmt.Println(info)
 
-	ctxScan, cancelScan := context.WithTimeout(generalBackground, 3*time.Minute)
+	ctxScan, cancelScan := context.WithTimeout(generalBackground, 10*time.Minute)
 	defer cancelScan()
 
 	const numWorkers = 2
@@ -28,23 +35,53 @@ func LaunchPrincipalExecution() {
 
 	jobs := make(chan string, len(domains))
 	results := make(chan ScanTask, len(domains))
+	signals := make(chan WorkerSignal, numWorkers*2)
 	var wg sync.WaitGroup
 
 	for i := range numWorkers {
 		wg.Add(1)
-		go worker(i, ctxScan, jobs, results, &wg)
+		go worker(i, ctxScan, jobs, results, signals, &wg)
 	}
 
-	for _, domain := range domains {
-		jobs <- domain
-	}
-	close(jobs)
+	go func() {
+		ticker := time.NewTicker(time.Duration(info.NewAssessmentCoolOff * int(time.Millisecond)))
+		defer ticker.Stop()
+
+		for _, domain := range domains {
+			<-ticker.C
+			jobs <- domain
+			slog.Info("--> Dominio enviado al pool", "dominio", domain)
+		}
+		close(jobs)
+
+	}()
+
+	go func() {
+		for signal := range signals {
+			switch signal.Action {
+			case "rate_limit":
+				slog.Warn("Rate limit detectado", "worker", signal.WorkerID, "domain", signal.Domain)
+			case "service_down":
+				slog.Error("Servicio caido", "code", signal.StatusCode)
+				// TODO: Hacer CloseAll() para cerrar todo debido a problemas con el servidor
+			}
+		}
+	}()
 
 	wg.Wait()
 	close(results)
+	close(signals)
 
-	for results := range results {
-		fmt.Println(results)
+	var finalResults []ScanTask
+	for result := range results {
+
+		finalResults = append(finalResults, result)
+		if result.Status == "failed" {
+			slog.Warn("Dominio falló", "domain", result.Host, "error", *result.Error)
+		} else {
+			//slog.Info("Dominio completado", "domain", result.Host, "grade", result.Endpoints[0].Grade)
+			fmt.Println(result)
+		}
 	}
 
 	/*
@@ -61,13 +98,39 @@ func LaunchPrincipalExecution() {
 	*/
 }
 
-func worker(id int, ctx context.Context, jobs <-chan string, results chan<- ScanTask, wg *sync.WaitGroup) {
+func worker(id int, ctx context.Context, jobs <-chan string,
+	results chan<- ScanTask,
+	signals chan<- WorkerSignal,
+	wg *sync.WaitGroup) {
 	defer wg.Done()
 	for domain := range jobs {
 		slog.Info("Escaneo inicializado", "Worker", id, "Dominio", domain)
 		status, result, err := ScanLogic(ctx, domain)
+
+		if status == 429 {
+			signals <- WorkerSignal{
+				WorkerID:   id,
+				StatusCode: 429,
+				Domain:     domain,
+				Action:     "rate_limit",
+			}
+
+			time.Sleep(30 * time.Second)
+			continue
+		}
+
+		if status == 503 || status == 529 {
+			signals <- WorkerSignal{
+				WorkerID:   id,
+				StatusCode: status,
+				Domain:     domain,
+				Action:     "service_down",
+			}
+			return
+		}
+
 		if err != nil {
-			slog.Error("Error grave al procesar el escaneo", "error", err)
+			slog.Error("Error grave al procesar el escaneo", "domain", domain, "error", err)
 			continue
 		}
 		fmt.Printf("Estatus: %d\n", status)

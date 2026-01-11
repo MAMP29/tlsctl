@@ -43,6 +43,10 @@ func (t ScanTask) String() string {
 	fmt.Fprintf(&b, "  Status: %s\n", t.Status)
 	fmt.Fprintf(&b, "  StartedAt: %d\n", t.StartedAt)
 
+	if t.Error != nil {
+		fmt.Fprintf(&b, "ErrorMessage: %s\n", *t.Error)
+	}
+
 	if !t.EndpointsAtZero() {
 		fmt.Fprintf(&b, "  Endpoints:\n")
 		for _, ep := range t.Endpoints {
