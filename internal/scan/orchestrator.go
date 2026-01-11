@@ -84,6 +84,11 @@ func LaunchPrincipalExecution() {
 		}
 	}
 
+	err := SaveResults(finalResults)
+	if err != nil {
+		slog.Error("Error durante el guardado de los resultados", "err", err)
+	}
+
 	/*
 		 	baseDomain := "ssllabs.com"
 
