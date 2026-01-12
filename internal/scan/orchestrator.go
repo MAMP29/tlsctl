@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"os"
 	"sync"
 	"time"
 )
@@ -31,18 +32,68 @@ func LaunchPrincipalExecution() {
 	ctxScan, cancelScan := context.WithTimeout(generalBackground, 10*time.Minute)
 	defer cancelScan()
 
+	logFile, _ := os.Create("scan.log")
+	logger := slog.New(slog.NewTextHandler(logFile, nil))
+	slog.SetDefault(logger)
+
 	const numWorkers = 2
-	domains := []string{"ssllabs.com", "google.com", "bubble.io"}
+	domains := []string{"ssllabs.com", "pomodorotimer.online", "danklinux.com"}
 
 	jobs := make(chan string, len(domains))
 	results := make(chan ScanTask, len(domains))
 	signals := make(chan WorkerSignal, numWorkers*2)
+	progress := make(chan ScanTask, numWorkers*2)
 	var wg sync.WaitGroup
 
 	for i := range numWorkers {
 		wg.Add(1)
-		go worker(i, ctxScan, jobs, results, signals, &wg)
+		go worker(i, ctxScan, jobs, results, signals, progress, &wg)
 	}
+
+	go func() {
+		for signal := range signals {
+			switch signal.Action {
+			case "rate_limit":
+				slog.Warn("Rate limit detectado", "worker", signal.WorkerID, "domain", signal.Domain)
+			case "service_down":
+				slog.Error("Servicio caido", "code", signal.StatusCode)
+				// TODO: Hacer CloseAll() para cerrar todo debido a problemas con el servidor
+			}
+		}
+	}()
+
+	statusMap := make(map[string]ScanTask)
+	var mu sync.Mutex
+
+	go func() {
+		for task := range progress {
+			mu.Lock()
+			statusMap[task.Host] = task
+
+			fmt.Print("\033[2J\033[H")
+			fmt.Println("=== MONITOR DE ESCANEO EN TIEMPO REAL ===")
+
+			for host, data := range statusMap {
+				fmt.Printf("[%s] Status: %s\n", host, data.Status)
+				for _, edp := range data.Endpoints {
+					barSize := 10
+					completed := edp.Progress / 10
+					bar := ""
+					for i := 0; i < barSize; i++ {
+						if i < completed {
+							bar += "█"
+						} else {
+							bar += "░"
+						}
+					}
+					fmt.Printf("  └─ IP: %-15s [%s] %d%% Grade: %s\n",
+						edp.IP, bar, edp.Progress, edp.Grade)
+				}
+			}
+			fmt.Println("==========================================")
+			mu.Unlock()
+		}
+	}()
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(info.NewAssessmentCoolOff * int(time.Millisecond)))
@@ -57,34 +108,17 @@ func LaunchPrincipalExecution() {
 
 	}()
 
-	go func() {
-		for signal := range signals {
-			switch signal.Action {
-			case "rate_limit":
-				slog.Warn("Rate limit detectado", "worker", signal.WorkerID, "domain", signal.Domain)
-			case "service_down":
-				slog.Error("Servicio caido", "code", signal.StatusCode)
-				// TODO: Hacer CloseAll() para cerrar todo debido a problemas con el servidor
-			}
-		}
-	}()
-
 	wg.Wait()
 	close(results)
 	close(signals)
+	close(progress)
 
 	var finalResults []ScanTask
 	for result := range results {
-
 		finalResults = append(finalResults, result)
-		if result.Status == "failed" {
-			slog.Warn("Dominio falló", "domain", result.Host, "error", *result.Error)
-		} else {
-			//slog.Info("Dominio completado", "domain", result.Host, "grade", result.Endpoints[0].Grade)
-			fmt.Println(result)
-		}
 	}
 
+	fmt.Println("Guardando resultados en un JSON")
 	err := SaveResults(finalResults)
 	if err != nil {
 		slog.Error("Error durante el guardado de los resultados", "err", err)
@@ -94,6 +128,7 @@ func LaunchPrincipalExecution() {
 func worker(id int, ctx context.Context, jobs <-chan string,
 	results chan<- ScanTask,
 	signals chan<- WorkerSignal,
+	progress chan<- ScanTask,
 	wg *sync.WaitGroup) {
 	defer wg.Done()
 
@@ -157,6 +192,7 @@ func worker(id int, ctx context.Context, jobs <-chan string,
 				if !waitContext(ctx, wait+jitter) {
 					return
 				}
+				progress <- result
 			}
 		}
 	}
