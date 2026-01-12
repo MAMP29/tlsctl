@@ -17,11 +17,9 @@ type WorkerSignal struct {
 	Action     string
 }
 
-func LaunchPrincipalExecution() {
+func LaunchPrincipalExecution(parentCtx context.Context, stop context.CancelFunc, domains []string, numWorkers int) {
 
-	generalBackground := context.Background()
-
-	ctxInfo, cancelInfo := context.WithTimeout(generalBackground, 20*time.Second)
+	ctxInfo, cancelInfo := context.WithTimeout(parentCtx, 20*time.Second)
 	defer cancelInfo()
 
 	info := GetInfo(ctxInfo)
@@ -29,15 +27,12 @@ func LaunchPrincipalExecution() {
 	fmt.Println("Obtención de la información")
 	fmt.Println(info)
 
-	ctxScan, cancelScan := context.WithTimeout(generalBackground, 10*time.Minute)
+	ctxScan, cancelScan := context.WithTimeout(parentCtx, 10*time.Minute)
 	defer cancelScan()
 
 	logFile, _ := os.Create("scan.log")
 	logger := slog.New(slog.NewTextHandler(logFile, nil))
 	slog.SetDefault(logger)
-
-	const numWorkers = 2
-	domains := []string{"ssllabs.com", "pomodorotimer.online", "danklinux.com"}
 
 	jobs := make(chan string, len(domains))
 	results := make(chan ScanTask, len(domains))
@@ -57,7 +52,9 @@ func LaunchPrincipalExecution() {
 				slog.Warn("Rate limit detectado", "worker", signal.WorkerID, "domain", signal.Domain)
 			case "service_down":
 				slog.Error("Servicio caido", "code", signal.StatusCode)
-				// TODO: Hacer CloseAll() para cerrar todo debido a problemas con el servidor
+				fmt.Println("El servicio no esta disponible por el momento, intenta de nuevo mas tarde")
+				stop()
+				return
 			}
 		}
 	}()
