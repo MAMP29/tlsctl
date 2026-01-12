@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -88,19 +89,6 @@ func LaunchPrincipalExecution() {
 	if err != nil {
 		slog.Error("Error durante el guardado de los resultados", "err", err)
 	}
-
-	/*
-		 	baseDomain := "ssllabs.com"
-
-			statusCode, scanTask, err := ScanLogic(ctxScan, baseDomain)
-			if err != nil {
-				fmt.Printf("Hubo un error al procesar el escaneo %s\n", err)
-			}
-			fmt.Printf("Código de estado final %d\n", statusCode)
-
-			fmt.Println("Tarea escaneada:")
-			fmt.Println(scanTask)
-	*/
 }
 
 func worker(id int, ctx context.Context, jobs <-chan string,
@@ -108,57 +96,77 @@ func worker(id int, ctx context.Context, jobs <-chan string,
 	signals chan<- WorkerSignal,
 	wg *sync.WaitGroup) {
 	defer wg.Done()
+
 	for domain := range jobs {
 		slog.Info("Escaneo inicializado", "Worker", id, "Dominio", domain)
 
-		var status int
-		var result ScanTask
-		var err error
-
-		maxRetries := 3
-
-		for i := 0; i <= maxRetries; i++ {
-			status, result, err = ScanLogic(ctx, domain)
-
-			if status != 429 {
-				break
-			}
-
-			if i < maxRetries {
-				signals <- WorkerSignal{
-					WorkerID:   id,
-					StatusCode: 429,
-					Domain:     domain,
-					Action:     "rate_limit",
-				}
-			}
-
-			waitTime := time.Duration(30*(i+1)) * time.Second
-			slog.Warn("429 recibido, reintentando", "worker", id, "attempt", i+1, "wait_time", waitTime)
-
-			select {
-			case <-time.After(waitTime):
-				continue
-			case <-ctx.Done():
-				return
-			}
-		}
-
-		if status == 503 || status == 529 {
-			signals <- WorkerSignal{
-				WorkerID:   id,
-				StatusCode: status,
-				Domain:     domain,
-				Action:     "service_down",
-			}
-			return
-		}
-
+		req, err := PrepareRequest(ctx, domain)
 		if err != nil {
-			slog.Error("Error grave al procesar el escaneo", "domain", domain, "error", err)
 			continue
 		}
-		fmt.Printf("Estatus: %d\n", status)
-		results <- result
+
+		var retries429, retries500 int
+
+		// Etiqueta de manejo de polling
+	PollingLoop:
+		for {
+			status, result, err := Execute(&req)
+
+			if err != nil {
+				slog.Error("Error de red", "worker", id, "dom", domain, "err", err)
+				break PollingLoop
+			}
+
+			switch status {
+			case 429:
+				retries429++
+				if retries429 > 3 {
+					slog.Error("Limite 429 excedido", "dom", domain)
+					break PollingLoop
+				}
+				signals <- WorkerSignal{WorkerID: id, StatusCode: 429, Action: "rate_limit"}
+				if !waitContext(ctx, time.Duration(30*retries429)*time.Second) {
+					return
+				}
+				continue
+
+			case 500:
+				retries500++
+				if retries500 > 4 {
+					break PollingLoop
+				}
+				if !waitContext(ctx, 5*time.Second) {
+					return
+				}
+				continue
+
+			case 503, 529:
+				signals <- WorkerSignal{WorkerID: id, StatusCode: status, Action: "service_down"}
+				return
+			}
+
+			switch result.Status {
+			case "READY", "ERROR":
+				results <- result
+				break PollingLoop
+
+			case "IN_PROGRESS", "pending":
+				slog.Debug("Esperando progreso...", "worker", id, "dom", domain)
+				wait := 10 * time.Second
+				jitter := time.Duration(rand.Float64() * float64(wait) * 0.2)
+				if !waitContext(ctx, wait+jitter) {
+					return
+				}
+			}
+		}
+	}
+}
+
+func waitContext(ctx context.Context, d time.Duration) bool {
+	select {
+	case <-time.After(d):
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
