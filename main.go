@@ -27,7 +27,7 @@ func main() {
 
 		scanCmd.Parse(os.Args[2:])
 
-		domains := scanCmd.Args()
+		domains := scan.ValidateDomains(scanCmd.Args())
 		if len(domains) == 0 {
 			slog.Error("No se especificaron dominios")
 			return
