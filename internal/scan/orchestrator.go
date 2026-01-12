@@ -110,18 +110,38 @@ func worker(id int, ctx context.Context, jobs <-chan string,
 	defer wg.Done()
 	for domain := range jobs {
 		slog.Info("Escaneo inicializado", "Worker", id, "Dominio", domain)
-		status, result, err := ScanLogic(ctx, domain)
 
-		if status == 429 {
-			signals <- WorkerSignal{
-				WorkerID:   id,
-				StatusCode: 429,
-				Domain:     domain,
-				Action:     "rate_limit",
+		var status int
+		var result ScanTask
+		var err error
+
+		maxRetries := 3
+
+		for i := 0; i <= maxRetries; i++ {
+			status, result, err = ScanLogic(ctx, domain)
+
+			if status != 429 {
+				break
 			}
 
-			time.Sleep(30 * time.Second)
-			continue
+			if i < maxRetries {
+				signals <- WorkerSignal{
+					WorkerID:   id,
+					StatusCode: 429,
+					Domain:     domain,
+					Action:     "rate_limit",
+				}
+			}
+
+			waitTime := time.Duration(30*(i+1)) * time.Second
+			slog.Warn("429 recibido, reintentando", "worker", id, "attempt", i+1, "wait_time", waitTime)
+
+			select {
+			case <-time.After(waitTime):
+				continue
+			case <-ctx.Done():
+				return
+			}
 		}
 
 		if status == 503 || status == 529 {
