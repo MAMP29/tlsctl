@@ -63,7 +63,7 @@ Para compilar y ejecutar la herramienta, es necesario contar con el entorno de G
 
 ```bash
 # Clonar el repositorio
-git clone <repositorio>
+git clone https://github.com/MAMP29/tlsctl.git
 
 # Compilar el binario
 go build -o tlsctl
